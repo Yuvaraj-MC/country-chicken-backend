@@ -2,54 +2,52 @@ pipeline {
     agent any
 
     tools {
-        maven 'maven3.9.12'
+        maven 'maven3.9.16'
         jdk 'java17'
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
     }
 
     environment {
         APP_NAME         = 'country-chicken-backend'
-
-        NEXUS_MAVEN_URL  = '3.89.152.50:8081'
-        NEXUS_DOCKER_URL = '3.89.152.50:8082'
-
+        NEXUS_MAVEN_URL  = '54.145.178.156:8081'
+        NEXUS_DOCKER_URL = '54.145.178.156:8082'
         MAVEN_REPO       = 'maven-releases'
         DOCKER_REPO      = 'docker-releases'
-
         GROUP_ID         = 'com.countrychicken'
-        VERSION          = ''
-        JAR_NAME         = ''
     }
 
     stages {
-
         stage('Checkout') {
             steps {
-                git branch: 'test',
-                    url: 'https://github.com/srikanth78933/country-chicken-backend.git'
+                checkout scm
             }
         }
 
         stage('Set Version') {
             steps {
                 script {
-                    VERSION = sh(
-                        script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
+                    env.VERSION = sh(
+                        script: 'mvn help:evaluate -Dexpression=project.version -q -DforceStdout',
                         returnStdout: true
                     ).trim()
 
-                    if (!VERSION) {
-                        error "❌ Version not found from pom.xml"
+                    if (!(env.VERSION ==~ /1\.0\.\d+/)) {
+                        error 'Expected release version: 1.0.0, 1.0.1, ...'
                     }
 
-                    JAR_NAME = "${APP_NAME}-${VERSION}.jar"
-                    echo "✅ Version: ${VERSION}"
+                    env.JAR_NAME = "${env.APP_NAME}-${env.VERSION}.jar"
+                    echo "Release version: ${env.VERSION}"
                 }
             }
         }
 
         stage('Build JAR') {
             steps {
-                sh 'mvn clean package -DskipTests'
+                sh 'mvn -B clean package -DskipTests'
             }
         }
 
@@ -58,16 +56,16 @@ pipeline {
                 nexusArtifactUploader(
                     nexusVersion: 'nexus3',
                     protocol: 'http',
-                    nexusUrl: "${NEXUS_MAVEN_URL}",
-                    groupId: "${GROUP_ID}",
-                    version: "${VERSION}",
-                    repository: "${MAVEN_REPO}",
+                    nexusUrl: env.NEXUS_MAVEN_URL,
+                    groupId: env.GROUP_ID,
+                    version: env.VERSION,
+                    repository: env.MAVEN_REPO,
                     credentialsId: 'nexus-credentials',
                     artifacts: [
                         [
-                            artifactId: "${APP_NAME}",
+                            artifactId: env.APP_NAME,
                             classifier: '',
-                            file: "target/${JAR_NAME}",
+                            file: "target/${env.JAR_NAME}",
                             type: 'jar'
                         ]
                     ]
@@ -77,31 +75,34 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh """
-                docker build \
-                  -t ${NEXUS_DOCKER_URL}/${DOCKER_REPO}/${APP_NAME}:${VERSION} \
-                  -t ${NEXUS_DOCKER_URL}/${DOCKER_REPO}/${APP_NAME}:latest .
-                """
+                sh '''
+                    docker build \
+                      -t "$NEXUS_DOCKER_URL/$DOCKER_REPO/$APP_NAME:$VERSION" .
+                '''
             }
         }
 
         stage('Push Docker Image') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'docker-nexus-credentials',
+                    credentialsId: 'nexus-credentials',
                     usernameVariable: 'DOCKER_USER',
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
-                    sh """
+                    sh '''
+                        set +x
+                        export DOCKER_CONFIG="$(mktemp -d)"
+                        trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 
-                    echo "$DOCKER_PASS" | docker login ${NEXUS_DOCKER_URL} -u "$DOCKER_USER" --password-stdin
+                        printf '%s' "$DOCKER_PASS" |
+                          docker login "$NEXUS_DOCKER_URL" \
+                            -u "$DOCKER_USER" --password-stdin
 
-                    docker push ${NEXUS_DOCKER_URL}/${DOCKER_REPO}/${APP_NAME}:${VERSION}
-                    docker push ${NEXUS_DOCKER_URL}/${DOCKER_REPO}/${APP_NAME}:latest
+                        docker push \
+                          "$NEXUS_DOCKER_URL/$DOCKER_REPO/$APP_NAME:$VERSION"
 
-                    docker logout ${NEXUS_DOCKER_URL}
-                    """
-
+                        docker logout "$NEXUS_DOCKER_URL"
+                    '''
                 }
             }
         }
@@ -109,13 +110,12 @@ pipeline {
 
     post {
         success {
-            echo "✅ Build & Push Successful"
+            echo 'JAR and Docker image published successfully'
         }
         failure {
-            echo "❌ Build Failed"
+            echo 'CI pipeline failed. Check the failed stage logs.'
         }
         always {
-            sh 'docker system prune -f'
             cleanWs()
         }
     }
