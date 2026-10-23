@@ -16,7 +16,7 @@
 
     <groupId>com.countrychicken</groupId>
     <artifactId>country-chicken-backend</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 
     <name>Country Chicken Backend</name>
     <description>Backend service for Country Chicken Application</description>
